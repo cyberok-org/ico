@@ -1,12 +1,12 @@
 package ico
 
 import (
-	"testing"
-	"os"
-	"image/png"
-	"image"
 	"fmt"
+	"image"
+	"image/png"
 	"math"
+	"os"
+	"testing"
 )
 
 func sqDiffUInt8(x, y uint8) uint64 {
@@ -27,7 +27,7 @@ func fastCompare(img1, img2 *image.NRGBA) (int64, error) {
 	return int64(math.Sqrt(float64(accumError))), nil
 }
 
-func aTestDecodeConfig(t *testing.T) {
+func TestDecodeConfig(t *testing.T) {
 	t.Parallel()
 	file := "testdata/golang.ico"
 	copyFile := "testdata/golang.png"

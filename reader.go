@@ -18,12 +18,12 @@ func init() {
 }
 
 // ---- public ----
-
 func Decode(r io.Reader) (image.Image, error) {
 	var d decoder
 	if err := d.decode(r); err != nil {
 		return nil, err
 	}
+
 	return d.images[0], nil
 }
 
@@ -54,7 +54,7 @@ func DecodeConfig(r io.Reader) (image.Config, error) {
 		return cfg, err
 	}
 	buf = buf[:14+n]
-	if n > 8 && bytes.Compare(buf[14:22], pngHeader) == 0 {
+	if n > 8 && bytes.Equal(buf[14:22], pngHeader) {
 		return png.DecodeConfig(bytes.NewReader(buf[14:]))
 	}
 
@@ -103,7 +103,7 @@ func (d *decoder) decode(r io.Reader) (err error) {
 			return err
 		}
 		data = data[:14+n]
-		if n > 8 && bytes.Compare(data[14:22], pngHeader) == 0 { // decode as PNG
+		if n > 8 && bytes.Equal(data[14:22], pngHeader) { // decode as PNG
 			if d.images[i], err = png.Decode(bytes.NewReader(data[14:])); err != nil {
 				return err
 			}
@@ -141,6 +141,9 @@ func (d *decoder) decode(r io.Reader) (err error) {
 			draw.DrawMask(masked, masked.Bounds(), d.images[i], bounds.Min, mask, bounds.Min, draw.Src)
 			d.images[i] = masked
 		}
+	}
+	if len(d.images) == 0 {
+		return fmt.Errorf("images not process during creating a rgba")
 	}
 	return nil
 }
