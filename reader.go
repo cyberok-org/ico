@@ -87,6 +87,7 @@ type decoder struct {
 	images  []image.Image
 }
 
+// decode multiple images from entries in reader
 func (d *decoder) decode(r io.Reader) (err error) {
 	if err = d.decodeHeader(r); err != nil {
 		return err
@@ -114,6 +115,9 @@ func (d *decoder) decode(r io.Reader) (err error) {
 			}
 			if d.images[i], err = bmp.Decode(bytes.NewReader(data)); err != nil {
 				return err
+			}
+			if int(e.Size) < len(data)-14 {
+				continue
 			}
 			bounds := d.images[i].Bounds()
 			mask := image.NewAlpha(image.Rect(0, 0, bounds.Dx(), bounds.Dy()))
@@ -158,11 +162,15 @@ func (d *decoder) decodeHeader(r io.Reader) error {
 
 func (d *decoder) decodeEntries(r io.Reader) error {
 	n := int(d.head.Number)
+
 	d.entries = make([]direntry, n)
 	for i := 0; i < n; i++ {
 		if err := binary.Read(r, binary.LittleEndian, &(d.entries[i])); err != nil {
 			return err
 		}
+	}
+	if len(d.entries) == 0 {
+		return fmt.Errorf("no entries to images")
 	}
 	return nil
 }
