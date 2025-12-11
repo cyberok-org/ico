@@ -9,30 +9,41 @@ import (
 	"image/draw"
 	"image/png"
 	"io"
+	"sync"
 
 	"golang.org/x/image/bmp"
 )
 
+var d decoder
+
 func init() {
 	image.RegisterFormat("ico", "\x00\x00\x01\x00?????\x00", Decode, DecodeConfig)
+	d = newDecoder()
 }
 
 // ---- public ----
+func newDecoder() decoder {
+	return decoder{
+		// buf: []byte{},
+	}
+}
+
 func Decode(r io.Reader) (image.Image, error) {
-	var d decoder
-	if err := d.decode(r); err != nil {
+	images, err := d.decode(r)
+	if err != nil {
 		return nil, err
 	}
 
-	return d.images[0], nil
+	return images[0], nil
 }
 
 func DecodeAll(r io.Reader) ([]image.Image, error) {
 	var d decoder
-	if err := d.decode(r); err != nil {
+	images, err := d.decode(r)
+	if err != nil {
 		return nil, err
 	}
-	return d.images, nil
+	return images, nil
 }
 
 func DecodeConfig(r io.Reader) (image.Config, error) {
@@ -41,13 +52,15 @@ func DecodeConfig(r io.Reader) (image.Config, error) {
 		cfg image.Config
 		err error
 	)
-	if err = d.decodeHeader(r); err != nil {
+	header, err := d.decodeHeader(r)
+	if err != nil {
 		return cfg, err
 	}
-	if err = d.decodeEntries(r); err != nil {
+	entries, err := d.decodeEntries(r, &header)
+	if err != nil {
 		return cfg, err
 	}
-	e := d.entries[0]
+	e := entries[0]
 	buf := make([]byte, e.Size+14)
 	n, err := io.ReadFull(r, buf[14:])
 	if err != nil && err != io.ErrUnexpectedEOF {
@@ -82,44 +95,71 @@ type head struct {
 }
 
 type decoder struct {
-	head    head
-	entries []direntry
-	images  []image.Image
+	// head    head
+	// entries []direntry
+	// images  []image.Image
+	buf []byte
+	mu  sync.RWMutex
 }
 
 // decode multiple images from entries in reader
-func (d *decoder) decode(r io.Reader) (err error) {
-	if err = d.decodeHeader(r); err != nil {
-		return err
+func (d *decoder) decode(r io.Reader) (images []image.Image, err error) {
+	header, err := d.decodeHeader(r)
+	if err != nil {
+		return nil, err
 	}
-	if err = d.decodeEntries(r); err != nil {
-		return err
+	entries, err := d.decodeEntries(r, &header)
+	if err != nil {
+		return nil, err
 	}
-	d.images = make([]image.Image, d.head.Number)
-	for i := range d.entries {
-		e := &(d.entries[i])
-		data := make([]byte, e.Size+14)
-		n, err := io.ReadFull(r, data[14:])
-		if err != nil && err != io.ErrUnexpectedEOF {
-			return err
+	images = make([]image.Image, header.Number)
+
+	var needSize uint32
+	for i := range entries {
+		e := &(entries[i])
+		if needSize < e.Size+14 {
+			needSize = e.Size + 14
 		}
-		data = data[:14+n]
+	}
+
+	d.mu.Lock()
+	if cap(d.buf) < int(needSize) {
+		d.buf = make([]byte, needSize)
+	}
+	d.mu.Unlock()
+
+	for i := range entries {
+		e := &(entries[i])
+
+		d.mu.Lock()
+		n, err := io.ReadFull(r, d.buf[14:])
+		d.mu.Unlock()
+		if err != nil && err != io.ErrUnexpectedEOF {
+			return nil, err
+		}
+		d.mu.RLock()
+		data := d.buf[:14+n]
 		if n > 8 && bytes.Equal(data[14:22], pngHeader) { // decode as PNG
-			if d.images[i], err = png.Decode(bytes.NewReader(data[14:])); err != nil {
-				return err
+			if images[i], err = png.Decode(bytes.NewReader(data[14:])); err != nil {
+				d.mu.RUnlock()
+				return nil, err
 			}
 		} else { // decode as BMP
+			d.mu.RUnlock()
+			d.mu.Lock()
 			maskData := d.forgeBMPHead(data, e)
+			d.mu.Unlock()
+			d.mu.RLock()
 			if maskData != nil {
 				data = data[:n+14-len(maskData)]
 			}
-			if d.images[i], err = bmp.Decode(bytes.NewReader(data)); err != nil {
-				return err
+			if images[i], err = bmp.Decode(bytes.NewReader(data)); err != nil {
+				return nil, err
 			}
 			if int(e.Size) < len(data)-14 {
 				continue
 			}
-			bounds := d.images[i].Bounds()
+			bounds := images[i].Bounds()
 			mask := image.NewAlpha(image.Rect(0, 0, bounds.Dx(), bounds.Dy()))
 			masked := image.NewNRGBA(image.Rect(0, 0, bounds.Dx(), bounds.Dy()))
 			for row := 0; row < int(e.Height); row++ {
@@ -142,37 +182,49 @@ func (d *decoder) decode(r io.Reader) (err error) {
 					}
 				}
 			}
-			draw.DrawMask(masked, masked.Bounds(), d.images[i], bounds.Min, mask, bounds.Min, draw.Src)
-			d.images[i] = masked
+			draw.DrawMask(masked, masked.Bounds(), images[i], bounds.Min, mask, bounds.Min, draw.Src)
+			images[i] = masked
+			d.mu.RUnlock()
 		}
 	}
-	if len(d.images) == 0 {
-		return fmt.Errorf("images not process during creating a rgba")
+	if len(images) == 0 {
+		return nil, fmt.Errorf("images not process during creating a rgba")
 	}
-	return nil
+	return images, nil
 }
 
-func (d *decoder) decodeHeader(r io.Reader) error {
-	binary.Read(r, binary.LittleEndian, &(d.head))
-	if d.head.Zero != 0 || d.head.Type != 1 {
-		return fmt.Errorf("corrupted head: [%x,%x]", d.head.Zero, d.head.Type)
+func (d *decoder) decodeHeader(r io.Reader) (head, error) {
+	var header head
+	binary.Read(r, binary.LittleEndian, &header)
+	if header.Zero != 0 || header.Type != 1 {
+		return header, fmt.Errorf("corrupted head: [%x,%x]", header.Zero, header.Type)
 	}
-	return nil
+	return header, nil
 }
 
-func (d *decoder) decodeEntries(r io.Reader) error {
-	n := int(d.head.Number)
+// func (d *decoder) decodeHeader(r io.Reader) error {
+// 	binary.Read(r, binary.LittleEndian, &(d.head))
+// 	if d.head.Zero != 0 || d.head.Type != 1 {
+// 		return fmt.Errorf("corrupted head: [%x,%x]", d.head.Zero, d.head.Type)
+// 	}
+// 	return nil
+// }
 
-	d.entries = make([]direntry, n)
+func (d *decoder) decodeEntries(r io.Reader, header *head) ([]direntry, error) {
+	n := int(header.Number)
+
+	if n == 0 {
+		return nil, fmt.Errorf("no entries to images")
+	}
+
+	entries := make([]direntry, n)
 	for i := 0; i < n; i++ {
-		if err := binary.Read(r, binary.LittleEndian, &(d.entries[i])); err != nil {
-			return err
+		if err := binary.Read(r, binary.LittleEndian, &(entries[i])); err != nil {
+			return nil, err
 		}
 	}
-	if len(d.entries) == 0 {
-		return fmt.Errorf("no entries to images")
-	}
-	return nil
+
+	return entries, nil
 }
 
 func (d *decoder) forgeBMPHead(buf []byte, e *direntry) (mask []byte) {
