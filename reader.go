@@ -114,7 +114,7 @@ func (d *decoder) decode(r io.Reader) (err error) {
 	d.images = make([]image.Image, d.head.Number)
 	for i := range d.entries {
 		e := &(d.entries[i])
-		// Получаем буфер из пула
+
 		data := bufPool.Get().([]byte)
 		if cap(data) < int(e.Size)+14 {
 			continue
