@@ -99,7 +99,7 @@ type decoder struct {
 
 var bufPool = sync.Pool{
 	New: func() any {
-		return make([]byte, 0, 8*1024*1024) // базовый стартовый размер
+		return make([]byte, 0, 8*1024*1024)
 	},
 }
 
