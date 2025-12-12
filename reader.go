@@ -18,6 +18,15 @@ func init() {
 	image.RegisterFormat("ico", "\x00\x00\x01\x00?????\x00", Decode, DecodeConfig)
 }
 
+func getFirstImage(images []image.Image) image.Image {
+	for _, image := range images {
+		if image != nil {
+			return image
+		}
+	}
+	return nil
+}
+
 // ---- public ----
 func Decode(r io.Reader) (image.Image, error) {
 	var d decoder
@@ -25,7 +34,7 @@ func Decode(r io.Reader) (image.Image, error) {
 		return nil, err
 	}
 
-	return d.images[0], nil
+	return getFirstImage(d.images), nil
 }
 
 func DecodeAll(r io.Reader) ([]image.Image, error) {
@@ -90,7 +99,7 @@ type decoder struct {
 
 var bufPool = sync.Pool{
 	New: func() any {
-		return make([]byte, 0, 128*1024*1024) // базовый стартовый размер
+		return make([]byte, 0, 8*1024*1024) // базовый стартовый размер
 	},
 }
 
@@ -108,7 +117,8 @@ func (d *decoder) decode(r io.Reader) (err error) {
 		// Получаем буфер из пула
 		data := bufPool.Get().([]byte)
 		if cap(data) < int(e.Size)+14 {
-			data = make([]byte, 14+e.Size)
+			continue
+			// data = make([]byte, 14+e.Size)
 		}
 		data = data[:14+e.Size]
 		// data := make([]byte, e.Size+14)
