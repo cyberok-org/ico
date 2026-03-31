@@ -14,6 +14,8 @@ import (
 	"golang.org/x/image/bmp"
 )
 
+const maxSize = 1024
+
 func init() {
 	image.RegisterFormat("ico", "\x00\x00\x01\x00?????\x00", Decode, DecodeConfig)
 }
@@ -68,7 +70,10 @@ func DecodeConfig(r io.Reader) (image.Config, error) {
 		return png.DecodeConfig(bytes.NewReader(buf[14:]))
 	}
 
-	d.forgeBMPHead(buf, &e)
+	_, err = d.forgeBMPHead(buf, &e)
+	if err != nil {
+		return cfg, fmt.Errorf("forge of the BMP head: %w", err)
+	}
 	return bmp.DecodeConfig(bytes.NewReader(buf))
 }
 
@@ -132,7 +137,10 @@ func (d *decoder) decode(r io.Reader) (err error) {
 				return err
 			}
 		} else { // decode as BMP
-			maskData := d.forgeBMPHead(data, e)
+			maskData, err := d.forgeBMPHead(data, e)
+			if err != nil {
+				return fmt.Errorf("forge of the BMP head: %w", err)
+			}
 			if maskData != nil {
 				data = data[:n+14-len(maskData)]
 			}
@@ -198,7 +206,7 @@ func (d *decoder) decodeEntries(r io.Reader) error {
 	return nil
 }
 
-func (d *decoder) forgeBMPHead(buf []byte, e *direntry) (mask []byte) {
+func (d *decoder) forgeBMPHead(buf []byte, e *direntry) (mask []byte, err error) {
 	// See en.wikipedia.org/wiki/BMP_file_format
 	data := buf[14:]
 	imageSize := len(data)
@@ -217,6 +225,9 @@ func (d *decoder) forgeBMPHead(buf []byte, e *direntry) (mask []byte) {
 	h := binary.LittleEndian.Uint32(data[8:12])
 	if h > w {
 		binary.LittleEndian.PutUint32(data[8:12], h/2)
+	}
+	if h > maxSize || w > maxSize {
+		return nil, fmt.Errorf("going beyond the size limits")
 	}
 
 	binary.LittleEndian.PutUint32(buf[2:6], uint32(imageSize)) // File size
