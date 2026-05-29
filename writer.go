@@ -1,13 +1,13 @@
 package ico
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"image"
+	"image/draw"
 	"image/png"
 	"io"
-	"image/draw"
-	"bufio"
 )
 
 func Encode(w io.Writer, im image.Image) error {

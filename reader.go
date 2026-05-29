@@ -13,7 +13,11 @@ import (
 	"golang.org/x/image/bmp"
 )
 
-const maxSize = 1024
+const (
+	maxSize      = 1024
+	maxEntrySize = 8 * 1024 * 1024
+	maxEntries   = 1024
+)
 
 func init() {
 	image.RegisterFormat("ico", "\x00\x00\x01\x00?????\x00", Decode, DecodeConfig)
@@ -59,7 +63,10 @@ func DecodeConfig(r io.Reader) (image.Config, error) {
 		return cfg, err
 	}
 	e := d.entries[0]
-	buf := make([]byte, e.Size+14)
+	if err = validateEntrySize(&e); err != nil {
+		return cfg, err
+	}
+	buf := make([]byte, int(e.Size)+14)
 	n, err := io.ReadFull(r, buf[14:])
 	if err != nil && err != io.ErrUnexpectedEOF {
 		return cfg, err
@@ -113,6 +120,9 @@ func (d *decoder) decode(r io.Reader) (err error) {
 	for i := range d.entries {
 		e := &(d.entries[i])
 
+		if err = validateEntrySize(e); err != nil {
+			return err
+		}
 		data := make([]byte, int(e.Size)+14)
 		n, err := io.ReadFull(r, data[14:])
 		if err != nil && err != io.ErrUnexpectedEOF {
@@ -170,6 +180,13 @@ func (d *decoder) decode(r io.Reader) (err error) {
 	return nil
 }
 
+func validateEntrySize(e *direntry) error {
+	if e.Size > maxEntrySize {
+		return fmt.Errorf("image data is too large: %d bytes exceeds %d", e.Size, maxEntrySize)
+	}
+	return nil
+}
+
 func (d *decoder) decodeHeader(r io.Reader) error {
 	binary.Read(r, binary.LittleEndian, &(d.head))
 	if d.head.Zero != 0 || d.head.Type != 1 {
@@ -180,6 +197,9 @@ func (d *decoder) decodeHeader(r io.Reader) error {
 
 func (d *decoder) decodeEntries(r io.Reader) error {
 	n := int(d.head.Number)
+	if n > maxEntries {
+		return fmt.Errorf("too many images: %d exceeds %d", n, maxEntries)
+	}
 
 	d.entries = make([]direntry, n)
 	for i := 0; i < n; i++ {
