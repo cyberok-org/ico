@@ -9,7 +9,6 @@ import (
 	"image/draw"
 	"image/png"
 	"io"
-	"sync"
 
 	"golang.org/x/image/bmp"
 )
@@ -102,12 +101,6 @@ type decoder struct {
 	images  []image.Image
 }
 
-var bufPool = sync.Pool{
-	New: func() any {
-		return make([]byte, 0, 8*1024*1024)
-	},
-}
-
 // decode multiple images from entries in reader
 func (d *decoder) decode(r io.Reader) (err error) {
 	if err = d.decodeHeader(r); err != nil {
@@ -120,13 +113,7 @@ func (d *decoder) decode(r io.Reader) (err error) {
 	for i := range d.entries {
 		e := &(d.entries[i])
 
-		data := bufPool.Get().([]byte)
-		if cap(data) < int(e.Size)+14 {
-			continue
-			// data = make([]byte, 14+e.Size)
-		}
-		data = data[:14+e.Size]
-		// data := make([]byte, e.Size+14)
+		data := make([]byte, int(e.Size)+14)
 		n, err := io.ReadFull(r, data[14:])
 		if err != nil && err != io.ErrUnexpectedEOF {
 			return err
