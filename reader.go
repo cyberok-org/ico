@@ -13,8 +13,23 @@ import (
 	"golang.org/x/image/bmp"
 )
 
+const (
+	maxSize      = 1024
+	maxEntrySize = 8 * 1024 * 1024
+	maxEntries   = 1024
+)
+
 func init() {
 	image.RegisterFormat("ico", "\x00\x00\x01\x00?????\x00", Decode, DecodeConfig)
+}
+
+func getFirstImage(images []image.Image) image.Image {
+	for _, image := range images {
+		if image != nil {
+			return image
+		}
+	}
+	return nil
 }
 
 // ---- public ----
@@ -24,7 +39,7 @@ func Decode(r io.Reader) (image.Image, error) {
 		return nil, err
 	}
 
-	return d.images[0], nil
+	return getFirstImage(d.images), nil
 }
 
 func DecodeAll(r io.Reader) ([]image.Image, error) {
@@ -48,7 +63,10 @@ func DecodeConfig(r io.Reader) (image.Config, error) {
 		return cfg, err
 	}
 	e := d.entries[0]
-	buf := make([]byte, e.Size+14)
+	if err = validateEntrySize(&e); err != nil {
+		return cfg, err
+	}
+	buf := make([]byte, int(e.Size)+14)
 	n, err := io.ReadFull(r, buf[14:])
 	if err != nil && err != io.ErrUnexpectedEOF {
 		return cfg, err
@@ -58,7 +76,10 @@ func DecodeConfig(r io.Reader) (image.Config, error) {
 		return png.DecodeConfig(bytes.NewReader(buf[14:]))
 	}
 
-	d.forgeBMPHead(buf, &e)
+	_, err = d.forgeBMPHead(buf, &e)
+	if err != nil {
+		return cfg, fmt.Errorf("forge of the BMP head: %w", err)
+	}
 	return bmp.DecodeConfig(bytes.NewReader(buf))
 }
 
@@ -98,7 +119,11 @@ func (d *decoder) decode(r io.Reader) (err error) {
 	d.images = make([]image.Image, d.head.Number)
 	for i := range d.entries {
 		e := &(d.entries[i])
-		data := make([]byte, e.Size+14)
+
+		if err = validateEntrySize(e); err != nil {
+			return err
+		}
+		data := make([]byte, int(e.Size)+14)
 		n, err := io.ReadFull(r, data[14:])
 		if err != nil && err != io.ErrUnexpectedEOF {
 			return err
@@ -109,7 +134,10 @@ func (d *decoder) decode(r io.Reader) (err error) {
 				return err
 			}
 		} else { // decode as BMP
-			maskData := d.forgeBMPHead(data, e)
+			maskData, err := d.forgeBMPHead(data, e)
+			if err != nil {
+				return fmt.Errorf("forge of the BMP head: %w", err)
+			}
 			if maskData != nil {
 				data = data[:n+14-len(maskData)]
 			}
@@ -152,6 +180,13 @@ func (d *decoder) decode(r io.Reader) (err error) {
 	return nil
 }
 
+func validateEntrySize(e *direntry) error {
+	if e.Size > maxEntrySize {
+		return fmt.Errorf("image data is too large: %d bytes exceeds %d", e.Size, maxEntrySize)
+	}
+	return nil
+}
+
 func (d *decoder) decodeHeader(r io.Reader) error {
 	binary.Read(r, binary.LittleEndian, &(d.head))
 	if d.head.Zero != 0 || d.head.Type != 1 {
@@ -162,6 +197,9 @@ func (d *decoder) decodeHeader(r io.Reader) error {
 
 func (d *decoder) decodeEntries(r io.Reader) error {
 	n := int(d.head.Number)
+	if n > maxEntries {
+		return fmt.Errorf("too many images: %d exceeds %d", n, maxEntries)
+	}
 
 	d.entries = make([]direntry, n)
 	for i := 0; i < n; i++ {
@@ -175,7 +213,7 @@ func (d *decoder) decodeEntries(r io.Reader) error {
 	return nil
 }
 
-func (d *decoder) forgeBMPHead(buf []byte, e *direntry) (mask []byte) {
+func (d *decoder) forgeBMPHead(buf []byte, e *direntry) (mask []byte, err error) {
 	// See en.wikipedia.org/wiki/BMP_file_format
 	data := buf[14:]
 	imageSize := len(data)
@@ -194,6 +232,9 @@ func (d *decoder) forgeBMPHead(buf []byte, e *direntry) (mask []byte) {
 	h := binary.LittleEndian.Uint32(data[8:12])
 	if h > w {
 		binary.LittleEndian.PutUint32(data[8:12], h/2)
+	}
+	if h > maxSize || w > maxSize {
+		return nil, fmt.Errorf("going beyond the size limits")
 	}
 
 	binary.LittleEndian.PutUint32(buf[2:6], uint32(imageSize)) // File size
